@@ -79,14 +79,14 @@ router.get('/oauth/google/callback',
       });
       
       delete req.session.oauthState;
-      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth?error=csrf_failed&provider=google`);
+      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:300055'}/auth?error=csrf_failed&provider=google`);
     }
     
     delete req.session.oauthState;
     next();
   },
   passport.authenticate('google', { 
-    failureRedirect: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth?error=oauth_failed&provider=google`,
+    failureRedirect: `${process.env.FRONTEND_URL || 'http://localhost:300055'}/auth?error=oauth_failed&provider=google`,
     session: false 
   }),
   (req, res, next) => AuthController.handleOAuthSuccess(req, res, next)
@@ -142,7 +142,7 @@ router.get('/oauth/facebook/callback',
           ip: req.ip
         });
         
-        return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth?error=session_invalid&provider=facebook`);
+        return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:300055'}/auth?error=session_invalid&provider=facebook`);
       }
       
       delete req.session.oauthProvider;
@@ -150,7 +150,7 @@ router.get('/oauth/facebook/callback',
     }
   },
   passport.authenticate('facebook', { 
-    failureRedirect: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth?error=oauth_failed&provider=facebook`,
+    failureRedirect: `${process.env.FRONTEND_URL || 'http://localhost:300055'}/auth?error=oauth_failed&provider=facebook`,
     session: false 
   }),
   (req, res, next) => AuthController.handleOAuthSuccess(req, res, next)
@@ -192,14 +192,14 @@ router.get('/oauth/github/callback',
       });
       
       delete req.session.oauthState;
-      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth?error=csrf_failed&provider=github`);
+      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:300055'}/auth?error=csrf_failed&provider=github`);
     }
     
     delete req.session.oauthState;
     next();
   },
   passport.authenticate('github', { 
-    failureRedirect: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/auth?error=oauth_failed&provider=github`,
+    failureRedirect: `${process.env.FRONTEND_URL || 'http://localhost:300055'}/auth?error=oauth_failed&provider=github`,
     session: false 
   }),
   (req, res, next) => AuthController.handleOAuthSuccess(req, res, next)

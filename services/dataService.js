@@ -1,39 +1,50 @@
-const axios = require('axios');
-const logger = require('../utils/logger');
+const axios = require("axios");
+const logger = require("../utils/logger");
 
 class DataService {
   constructor() {
-    this.baseURL = process.env.DATA_SERVICE_URL || 'http://localhost:5002/api';
+    const rawBaseURL = process.env.DATA_SERVICE_URL || "http://localhost:5002";
+    this.baseURL = `${rawBaseURL}/api`;
+
     this.client = axios.create({
       baseURL: this.baseURL,
       timeout: 5000,
       headers: {
-        'Content-Type': 'application/json',
-        'X-Service': 'auth-service'
-      }
+        "Content-Type": "application/json",
+        "X-Service": "auth-service",
+      },
     });
 
     this.client.interceptors.request.use(
       (config) => {
-        logger.info(`📡 Requête vers data-service: ${config.method?.toUpperCase()} ${config.url}`);
+        logger.info(
+          `📡 Requête vers data-service: ${config.method?.toUpperCase()} ${
+            config.url
+          }`
+        );
         return config;
       },
       (error) => {
-        logger.error('❌ Erreur requête data-service:', error);
+        logger.error("❌ Erreur requête data-service:", error);
         return Promise.reject(error);
       }
     );
 
     this.client.interceptors.response.use(
       (response) => {
-        logger.info(`✅ Réponse data-service: ${response.status} ${response.config.url}`);
+        logger.info(
+          `✅ Réponse data-service: ${response.status} ${response.config.url}`
+        );
         return response;
       },
       (error) => {
-        logger.error(`❌ Erreur réponse data-service: ${error.response?.status} ${error.config?.url}`, {
-          message: error.response?.data?.message || error.message,
-          status: error.response?.status
-        });
+        logger.error(
+          `❌ Erreur réponse data-service: ${error.response?.status} ${error.config?.url}`,
+          {
+            message: error.response?.data?.message || error.message,
+            status: error.response?.status,
+          }
+        );
         return Promise.reject(error);
       }
     );
@@ -42,37 +53,55 @@ class DataService {
   // Créer un nouvel utilisateur
   async createUser(userData) {
     try {
-      const response = await this.client.post('/users', {
+      const response = await this.client.post("/users", {
         email: userData.email,
         firstName: userData.firstName,
         lastName: userData.lastName,
         password: userData.password,
         phoneNumber: userData.phoneNumber,
-        role: userData.role || 'user',
+        role: userData.role || "user",
         isVerified: userData.isVerified || false,
         oauth: userData.oauth,
-        createdAt: new Date()
+        createdAt: new Date(),
       });
-      
-      logger.info('👤 Utilisateur créé via data-service', { userId: response.data.id });
+
+      logger.info("👤 Utilisateur créé via data-service", {
+        userId: response.data.id,
+      });
       return response.data;
     } catch (error) {
-      logger.error('❌ Erreur création utilisateur:', error.response?.data || error.message);
-      throw new Error(`Erreur création utilisateur: ${error.response?.data?.message || error.message}`);
+      logger.error(
+        "❌ Erreur création utilisateur:",
+        error.response?.data || error.message
+      );
+      throw new Error(
+        `Erreur création utilisateur: ${
+          error.response?.data?.message || error.message
+        }`
+      );
     }
   }
 
   // Trouver un utilisateur par email
   async findUserByEmail(email) {
     try {
-      const response = await this.client.get(`/users/email/${encodeURIComponent(email)}`);
+      const response = await this.client.get(
+        `/users/email/${encodeURIComponent(email)}`
+      );
       return response.data;
     } catch (error) {
       if (error.response?.status === 404) {
         return null;
       }
-      logger.error('❌ Erreur recherche utilisateur par email:', error.response?.data || error.message);
-      throw new Error(`Erreur recherche utilisateur: ${error.response?.data?.message || error.message}`);
+      logger.error(
+        "❌ Erreur recherche utilisateur par email:",
+        error.response?.data || error.message
+      );
+      throw new Error(
+        `Erreur recherche utilisateur: ${
+          error.response?.data?.message || error.message
+        }`
+      );
     }
   }
 
@@ -85,8 +114,15 @@ class DataService {
       if (error.response?.status === 404) {
         return null;
       }
-      logger.error('❌ Erreur recherche utilisateur par ID:', error.response?.data || error.message);
-      throw new Error(`Erreur recherche utilisateur: ${error.response?.data?.message || error.message}`);
+      logger.error(
+        "❌ Erreur recherche utilisateur par ID:",
+        error.response?.data || error.message
+      );
+      throw new Error(
+        `Erreur recherche utilisateur: ${
+          error.response?.data?.message || error.message
+        }`
+      );
     }
   }
 
@@ -94,35 +130,45 @@ class DataService {
   async updateUser(userId, updateData) {
     try {
       const response = await this.client.put(`/users/${userId}`, updateData);
-      logger.info('📝 Utilisateur mis à jour via data-service', { userId });
+      logger.info("📝 Utilisateur mis à jour via data-service", { userId });
       return response.data;
     } catch (error) {
-      logger.error('❌ Erreur mise à jour utilisateur:', error.response?.data || error.message);
-      throw new Error(`Erreur mise à jour utilisateur: ${error.response?.data?.message || error.message}`);
+      logger.error(
+        "❌ Erreur mise à jour utilisateur:",
+        error.response?.data || error.message
+      );
+      throw new Error(
+        `Erreur mise à jour utilisateur: ${
+          error.response?.data?.message || error.message
+        }`
+      );
     }
   }
 
   // Vérifier la connexion au data-service
   async healthCheck() {
     try {
-      const response = await this.client.get('/health');
+      const response = await this.client.get("/health");
       return response.data;
     } catch (error) {
-      logger.error('❌ Data-service non disponible:', error.message);
-      throw new Error('Data-service non disponible');
+      logger.error("❌ Data-service non disponible:", error.message);
+      throw new Error("Data-service non disponible");
     }
   }
 
   // Enregistrer un événement d'authentification
   async logAuthEvent(eventData) {
     try {
-      await this.client.post('/auth-events', {
+      await this.client.post("/auth-events", {
         ...eventData,
         timestamp: new Date(),
-        service: 'auth-service'
+        service: "auth-service",
       });
     } catch (error) {
-      logger.warn('⚠️ Impossible d\'enregistrer l\'événement auth:', error.message);
+      logger.warn(
+        "⚠️ Impossible d'enregistrer l'événement auth:",
+        error.message
+      );
     }
   }
 }

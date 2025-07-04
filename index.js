@@ -10,296 +10,329 @@ const PassportConfig = require("./config/passportConfig");
 const SecurityMiddleware = require("./middleware/security");
 const dataService = require("./services/dataService");
 const authRoutes = require("./routes/authRoutes");
-const metricsRoutes = require("./routes/metricsRoutes");
 const {
+  register,
   httpRequestDuration,
-  serviceHealthStatus,
-  externalServiceHealth,
-} = require("./services/metricsServices");
+  httpRequestsTotal,
+  updateServiceHealth,
+  updateActiveConnections,
+  updateDatabaseHealth,
+  updateExternalServiceHealth
+} = require('./metrics');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
+const METRICS_PORT = process.env.METRICS_PORT || 9001;
+const SERVICE_NAME = "auth-service";
 
-console.log("🔥 Lancement du serveur d'authentification...");
+console.log(`🔥 Lancement du ${SERVICE_NAME}...`);
+
+// INITIALISATION ASYNC
 
 (async () => {
   try {
-    // ───────────── Vérification des services dépendants ─────────────
+    // Connexion MongoDB (optionnelle pour auth-service)
+    if (process.env.MONGODB_URI) {
+      try {
+        await mongoose.connect(process.env.MONGODB_URI);
+        logger.info("✅ Connexion MongoDB établie");
+        updateDatabaseHealth('mongodb', true);
+      } catch (error) {
+        logger.warn("⚠️ MongoDB non disponible:", error.message);
+        updateDatabaseHealth('mongodb', false);
+      }
+    }
+
+    // Vérification data-service
     logger.info("🔍 Vérification de la connexion au data-service...");
     try {
       await dataService.healthCheck();
       logger.info("✅ Data-service disponible");
+      updateExternalServiceHealth('data-service', true);
     } catch (error) {
       logger.error("❌ Data-service indisponible:", error.message);
-      logger.warn(
-        "⚠️ Démarrage en mode dégradé - certaines fonctionnalités peuvent être limitées"
-      );
+      logger.warn("⚠️ Démarrage en mode dégradé");
+      updateExternalServiceHealth('data-service', false);
     }
 
-    // ───────────── Connexion MongoDB (fallback) ─────────────
-    if (process.env.MONGODB_URI) {
-      try {
-        await mongoose.connect(process.env.MONGODB_URI);
-        logger.info("✅ Connexion MongoDB établie (fallback)");
-      } catch (error) {
-        logger.warn("⚠️ MongoDB non disponible:", error.message);
-      }
-    }
+    // MIDDLEWARES DE SÉCURITÉ
 
-    // ───────────── Middlewares de sécurité ─────────────
-    app.use(
-      helmet({
-        contentSecurityPolicy: {
-          directives: {
-            defaultSrc: ["'self'"],
-            scriptSrc: [
-              "'self'",
-              "'unsafe-inline'",
-              "https://accounts.google.com",
-              "https://connect.facebook.net",
-            ],
-            styleSrc: ["'self'", "'unsafe-inline'"],
-            imgSrc: ["'self'", "data:", "https:"],
-            connectSrc: [
-              "'self'",
-              "https://accounts.google.com",
-              "https://graph.facebook.com",
-              "https://api.github.com",
-            ],
-            fontSrc: ["'self'", "https:", "data:"],
-            objectSrc: ["'none'"],
-            mediaSrc: ["'self'"],
-            frameSrc: ["'none'"],
-          },
+    app.use(helmet({
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'", "'unsafe-inline'", "https://accounts.google.com"],
+          connectSrc: ["'self'", "https://accounts.google.com", "https://api.github.com"],
         },
-        crossOriginEmbedderPolicy: false,
-      })
-    );
+      },
+      crossOriginEmbedderPolicy: false,
+    }));
 
-    app.use(
-      cors({
-        origin: process.env.CORS_ORIGIN?.split(",") || [
-          "http://localhost:3000",
-        ],
-        credentials: true,
-        methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-      })
-    );
+    app.use(cors({
+      origin: process.env.CORS_ORIGIN?.split(",") || ["http://localhost:3000"],
+      credentials: true,
+      methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+      allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+    }));
 
-    // ───────────── Middlewares de parsing ─────────────
-    app.use(
-      express.json({
-        limit: "1mb",
-        verify: (req, res, buf) => {
-          req.rawBody = buf;
-        },
-      })
-    );
-
+    app.use(express.json({ limit: "1mb" }));
     app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 
-    // ───────────── Session avec sécurité renforcée ─────────────
-    app.use(
-      session({
-        secret: process.env.SESSION_SECRET || "your-super-secret-session-key",
-        resave: false,
-        saveUninitialized: false,
-        cookie: {
-          secure: process.env.NODE_ENV === "production",
-          httpOnly: true,
-          maxAge: 24 * 60 * 60 * 1000,
-          sameSite: process.env.NODE_ENV === "production" ? "strict" : "lax",
-        },
-        name: "auth.session.id",
-      })
-    );
+    // Session
+    app.use(session({
+      secret: process.env.SESSION_SECRET || "your-super-secret-session-key",
+      resave: false,
+      saveUninitialized: false,
+      cookie: {
+        secure: process.env.NODE_ENV === "production",
+        httpOnly: true,
+        maxAge: 24 * 60 * 60 * 1000,
+        sameSite: process.env.NODE_ENV === "production" ? "strict" : "lax",
+      },
+      name: "auth.session.id",
+    }));
 
-    // ───────────── Middlewares de sécurité avancés ─────────────
-
-    // Rate limiting général
+    // Rate limiting spécifique
     app.use(SecurityMiddleware.createAdvancedRateLimit());
 
-    // ───────────── Middleware de monitoring temps de réponse ─────────────
+    // MIDDLEWARE DE MÉTRIQUES STANDARDISÉ
+
+    let currentConnections = 0;
+
     app.use((req, res, next) => {
-      const start = process.hrtime();
+      const start = Date.now();
+      currentConnections++;
+      updateActiveConnections(currentConnections);
 
       res.on("finish", () => {
-        const duration = process.hrtime(start);
-        const seconds = duration[0] + duration[1] / 1e9;
+        const duration = (Date.now() - start) / 1000;
+        currentConnections--;
+        updateActiveConnections(currentConnections);
 
-        // Mesurer le temps de réponse
         httpRequestDuration.observe(
           {
             method: req.method,
-            route: req.path,
+            route: req.route?.path || req.path,
             status_code: res.statusCode,
           },
-          seconds
+          duration
         );
+
+        httpRequestsTotal.inc({
+          method: req.method,
+          route: req.route?.path || req.path,
+          status_code: res.statusCode,
+        });
+
+        logger.info(`${req.method} ${req.path} - ${res.statusCode} - ${Math.round(duration * 1000)}ms`);
       });
+
       next();
     });
 
-    // ───────────── Middleware de logging ─────────────
-    app.use((req, res, next) => {
-      const start = Date.now();
-      res.on("finish", () => {
-        const duration = Date.now() - start;
-        logger.logHttpRequest(req, res, duration);
-      });
-      next();
-    });
+    // CONFIGURATION PASSPORT
 
-    // ───────────── Configuration Passport ─────────────
     app.use(passport.initialize());
     app.use(passport.session());
     PassportConfig.initializeStrategies();
 
-    // ───────────── Routes avec sécurité OAuth ─────────────
+    // ROUTES SPÉCIFIQUES AUTH
+
     app.use("/auth/oauth", SecurityMiddleware.createOAuthRateLimit());
     app.use("/auth", SecurityMiddleware.validateOAuthSecurity());
     app.use("/auth", authRoutes);
-    app.use("/metrics", metricsRoutes);
 
-    // ───────────── Route de santé avec métriques ─────────────
+    // ROUTES STANDARD
+
+    // Métriques Prometheus
+    app.get("/metrics", async (req, res) => {
+      res.set("Content-Type", register.contentType);
+      res.end(await register.metrics());
+    });
+
+    // Health check enrichi pour auth-service
     app.get("/health", async (req, res) => {
       const health = {
         status: "healthy",
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
-        services: {},
+        service: SERVICE_NAME,
+        version: "1.0.0",
+        dependencies: {}
       };
 
       try {
         await dataService.healthCheck();
-        health.services.dataService = "healthy";
-        externalServiceHealth.set({ service_name: "data-service" }, 1);
+        health.dependencies.dataService = "healthy";
+        updateExternalServiceHealth('data-service', true);
       } catch (error) {
-        health.services.dataService = "unhealthy";
+        health.dependencies.dataService = "unhealthy";
         health.status = "degraded";
-        externalServiceHealth.set({ service_name: "data-service" }, 0);
+        updateExternalServiceHealth('data-service', false);
       }
 
       if (mongoose.connection.readyState === 1) {
-        health.services.mongodb = "healthy";
-        externalServiceHealth.set({ service_name: "mongodb" }, 1);
+        health.dependencies.mongodb = "healthy";
+        updateDatabaseHealth('mongodb', true);
       } else {
-        health.services.mongodb = "unhealthy";
+        health.dependencies.mongodb = "unhealthy";
         health.status = "degraded";
-        externalServiceHealth.set({ service_name: "mongodb" }, 0);
+        updateDatabaseHealth('mongodb', false);
       }
 
-      const isHealthy = health.status === "healthy" ? 1 : 0;
-      serviceHealthStatus.set({ service_name: "auth-service" }, isHealthy);
+      const isHealthy = health.status === "healthy";
+      updateServiceHealth(SERVICE_NAME, isHealthy);
 
-      const statusCode = health.status === "healthy" ? 200 : 503;
+      const statusCode = isHealthy ? 200 : 503;
       res.status(statusCode).json(health);
     });
 
-    app.get("/ping", (req, res) =>
-      res.status(200).json({
-        status: "pong ✅",
+    // Vitals
+    app.get("/vitals", (req, res) => {
+      const activeSessions = req.sessionStore ? Object.keys(req.sessionStore.sessions || {}).length : 0;
+
+      const vitals = {
+        service: SERVICE_NAME,
         timestamp: new Date().toISOString(),
-        service: "auth-service",
-      })
-    );
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+        cpu: process.cpuUsage(),
+        status: "running",
+        active_connections: currentConnections,
+        
+        auth: {
+          active_sessions: activeSessions,
+          providers_enabled: {
+            google: !!process.env.GOOGLE_CLIENT_ID,
+            facebook: !!process.env.FACEBOOK_CLIENT_ID,
+            github: !!process.env.GITHUB_CLIENT_ID
+          },
+          mongodb_connected: mongoose.connection.readyState === 1,
+          data_service_available: false
+        }
+      };
 
-    // ───────────── Gestion 404 ─────────────
-    app.use((req, res) => {
-      logger.warn("📍 Route non trouvée", {
-        method: req.method,
-        path: req.path,
-        ip: req.ip,
-        userAgent: req.headers["user-agent"],
+      res.json(vitals);
+    });
+
+    // Ping
+    app.get("/ping", (req, res) => {
+      res.json({
+        status: "pong ✅",
+        service: SERVICE_NAME,
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime()
       });
+    });
 
+    // GESTION D'ERREURS
+
+    app.use((req, res) => {
       res.status(404).json({
         error: "Route non trouvée",
-        message: `La route ${req.method} ${req.path} n'existe pas`,
+        service: SERVICE_NAME,
+        message: `${req.method} ${req.path} n'existe pas`,
         availableRoutes: [
-          "GET /health",
-          "GET /ping",
-          "GET /auth/oauth/google",
-          "GET /auth/oauth/facebook",
-          "GET /auth/oauth/github",
-          "GET /metrics",
+          "GET /health", "GET /vitals", "GET /metrics", "GET /ping",
+          "GET /auth/oauth/google", "GET /auth/oauth/facebook", "GET /auth/oauth/github"
         ],
       });
     });
 
-    // ───────────── Gestion erreurs globales ─────────────
-    app.use((err, req, res) => {
-      logger.logApiError(req, err);
+    app.use((err, req, res, next) => {
+      logger.error(`💥 Erreur ${SERVICE_NAME}:`, err.message);
 
-      // Erreurs spécifiques OAuth
       if (err.name === "AuthenticationError") {
         return res.status(401).json({
           error: "Erreur d'authentification",
+          service: SERVICE_NAME,
           message: "Échec de l'authentification OAuth",
-          provider: req.params.provider || "unknown",
         });
       }
 
-      // Erreurs de rate limiting
       if (err.status === 429) {
         return res.status(429).json({
           error: "Trop de requêtes",
-          message: "Limite de taux dépassée, veuillez réessayer plus tard",
+          service: SERVICE_NAME,
+          message: "Limite de taux dépassée",
         });
       }
 
-      // Erreurs de validation
-      if (err.name === "ValidationError") {
-        return res.status(400).json({
-          error: "Erreur de validation",
-          message: err.message,
-          details: err.errors,
-        });
-      }
-
-      // Erreurs de connexion au data-service
-      if (err.message && err.message.includes("data-service")) {
-        return res.status(503).json({
-          error: "Service temporairement indisponible",
-          message: "Le service de données est actuellement indisponible",
-        });
-      }
-
-      const statusCode = err.statusCode || err.status || 500;
-      const message =
-        process.env.NODE_ENV === "production" && statusCode === 500
-          ? "Erreur serveur interne"
-          : err.message || "Une erreur est survenue";
-
-      res.status(statusCode).json({
+      res.status(err.statusCode || 500).json({
         error: "Erreur serveur",
-        message,
-        ...(process.env.NODE_ENV !== "production" && { stack: err.stack }),
+        service: SERVICE_NAME,
+        message: err.message || "Une erreur est survenue",
       });
     });
 
-    // ───────────── Démarrage du serveur ─────────────
+    // DÉMARRAGE
+
+    // Serveur principal
     app.listen(PORT, () => {
-      logger.info(
-        `🚀 Serveur d'authentification en écoute sur http://localhost:${PORT}`
-      );
-      logger.info(`🔐 Environnement: ${process.env.NODE_ENV || "development"}`);
-      logger.info(
-        `🌐 CORS autorisé pour: ${
-          process.env.CORS_ORIGIN || "http://localhost:3000"
-        }`
-      );
-      logger.info(
-        `📊 Métriques disponibles sur: http://localhost:${PORT}/metrics`
-      );
-      logger.info(
-        `❤️ Health check disponible sur: http://localhost:${PORT}/health`
-      );
+      console.log(`🔐 ${SERVICE_NAME} démarré sur le port ${PORT}`);
+      console.log(`📊 Métriques: http://localhost:${PORT}/metrics`);
+      console.log(`❤️ Health: http://localhost:${PORT}/health`);
+      console.log(`📈 Vitals: http://localhost:${PORT}/vitals`);
+      console.log(`🔑 OAuth Google: http://localhost:${PORT}/auth/oauth/google`);
+      
+      updateServiceHealth(SERVICE_NAME, true);
+      logger.info(`✅ ${SERVICE_NAME} avec métriques démarré`);
+      
+      if (mongoose.connection.readyState === 1) {
+        logger.info("✅ MongoDB connecté - OAuth fonctionnel");
+      } else {
+        logger.warn("⚠️ MongoDB non connecté - OAuth peut ne pas fonctionner");
+      }
     });
+
+    // Serveur métriques séparé
+    const metricsApp = express();
+    metricsApp.get('/metrics', async (req, res) => {
+      res.set('Content-Type', register.contentType);
+      res.end(await register.metrics());
+    });
+
+    metricsApp.get('/health', (req, res) => {
+      res.json({ status: 'healthy', service: `${SERVICE_NAME}-metrics` });
+    });
+
+    metricsApp.listen(METRICS_PORT, () => {
+      console.log(`📊 Metrics server running on port ${METRICS_PORT}`);
+    });
+
   } catch (err) {
     console.error("❌ Erreur fatale au démarrage :", err.message);
-    console.error(err.stack);
+    updateServiceHealth(SERVICE_NAME, false);
     process.exit(1);
   }
 })();
+
+// GRACEFUL SHUTDOWN
+
+function gracefulShutdown(signal) {
+  console.log(`🔄 Arrêt ${SERVICE_NAME} (${signal})...`);
+  updateServiceHealth(SERVICE_NAME, false);
+  updateDatabaseHealth('mongodb', false);
+  updateExternalServiceHealth('data-service', false);
+  updateActiveConnections(0);
+  
+  setTimeout(() => {
+    process.exit(0);
+  }, 1000);
+}
+
+process.on("SIGTERM", gracefulShutdown);
+process.on("SIGINT", gracefulShutdown);
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled Rejection:', reason);
+  updateServiceHealth(SERVICE_NAME, false);
+});
+
+process.on('uncaughtException', (error) => {
+  logger.error('Uncaught Exception:', error);
+  updateServiceHealth(SERVICE_NAME, false);
+  process.exit(1);
+});
+
+module.exports = app;

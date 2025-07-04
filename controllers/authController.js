@@ -40,7 +40,7 @@ class AuthController {
       }
 
       const redirectUrl = new URL(
-        process.env.FRONTEND_URL || "http://localhost:3000"
+        process.env.FRONTEND_URL || "http://localhost:30005"
       );
       redirectUrl.pathname = "/oauth-callback";
       redirectUrl.searchParams.set("token", accessToken);
