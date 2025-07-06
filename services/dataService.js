@@ -3,12 +3,29 @@ const logger = require("../utils/logger");
 
 class DataService {
   constructor() {
-    const rawBaseURL = process.env.DATA_SERVICE_URL || "http://localhost:5002";
+    // Configuration avec variables multiples pour Docker
+    const rawBaseURL = process.env.DATA_SERVICE_URL_DOCKER || 
+                      process.env.DATA_SERVICE_URL || 
+                      "http://localhost:5002";
+    
+    console.log(`🔗 Auth service using DATA_SERVICE_URL: ${rawBaseURL}`);
+    
     this.baseURL = `${rawBaseURL}/api`;
+    this.healthURL = `${rawBaseURL}/health`; // URL séparée pour health check
 
     this.client = axios.create({
       baseURL: this.baseURL,
       timeout: 5000,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Service": "auth-service",
+      },
+    });
+
+    // Client séparé pour health check
+    this.healthClient = axios.create({
+      baseURL: rawBaseURL,
+      timeout: 3000,
       headers: {
         "Content-Type": "application/json",
         "X-Service": "auth-service",
@@ -145,10 +162,10 @@ class DataService {
     }
   }
 
-  // Vérifier la connexion au data-service
+  // ✅ Health check corrigé - utilise /health directement
   async healthCheck() {
     try {
-      const response = await this.client.get("/health");
+      const response = await this.healthClient.get("/health");
       return response.data;
     } catch (error) {
       logger.error("❌ Data-service non disponible:", error.message);
